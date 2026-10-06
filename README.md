@@ -66,11 +66,11 @@ position. These are hard limits a model cannot talk its way around.
 
 ## Status
 
-- [x] Repo, risk engine, Jev client, Alpaca client, all three bots, dashboard, smoke test — written and import-clean.
-- [ ] `uv sync` run on this machine and dependency versions confirmed.
-- [ ] Alpaca paper account created (your step).
-- [ ] `e2e_smoke_test.py` run against real keys — the actual "live test before handoff" gate.
-- [ ] Futures data client path verified against a funded futures-enabled paper account (alpaca-py's futures API moved between recent releases — see the comment in `alpaca_client.get_futures_bars`).
-- [ ] A session of dry-run decisions reviewed before any bot goes live (even in paper).
+- [x] Repo, risk engine, Jev client, Alpaca client, all three bots, dashboard, smoke test — written, import-clean, and construction-tested (every bot built with real client/risk args, not just imported).
+- [x] `uv sync` run on this machine and dependency versions confirmed.
+- [x] Alpaca paper account created and keys wired into `.env`.
+- [x] `e2e_smoke_test.py` run against real keys and real live calls — Alpaca account call, Jev noul call, and ORB dry-run cycle all PASS. This is the actual "live test before handoff" gate, and it is met.
+- [ ] Futures data client path verified against a funded futures-enabled paper account (alpaca-py's futures API moved between recent releases — see the comment in `alpaca_client.get_futures_bars`). Still open — needs a futures-enabled account, which paper equities accounts don't include by default.
+- [ ] A session of dry-run decisions reviewed before any bot goes live (even in paper). Still open — this is your call, not a code task.
 
 See `docs/ARCHITECTURE.md` for the full design notes and open questions.

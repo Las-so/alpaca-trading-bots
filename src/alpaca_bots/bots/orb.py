@@ -12,18 +12,19 @@ asked a single `noul` — "is this breakout worth taking" — with the real
 numbers in state, not a vibe.
 """
 from __future__ import annotations
-from dataclasses import dataclass
 
 from .base import Bot, Signal
 from .. import jev_client
 
 
-@dataclass
 class OpeningRangeBreakout(Bot):
-    name: str = "orb"
-    symbol: str = "SPY"
-    range_minutes: int = 15
-    volume_confirm_mult: float = 1.5
+    name = "orb"
+
+    def __init__(self, *args, symbol: str = "SPY", range_minutes: int = 15, volume_confirm_mult: float = 1.5, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.symbol = symbol
+        self.range_minutes = range_minutes
+        self.volume_confirm_mult = volume_confirm_mult
 
     def compute_signal(self) -> Signal:
         bars = self.client.get_bars(self.symbol, timeframe="1Min", limit=self.range_minutes + 5)

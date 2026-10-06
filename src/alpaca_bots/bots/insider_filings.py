@@ -16,8 +16,8 @@ import re
 import time
 import urllib.request
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
 
+from dataclasses import dataclass
 from .base import Bot, Signal
 from .. import jev_client
 
@@ -104,9 +104,11 @@ def _parse_form4(index_url: str) -> InsiderPurchase | None:
     return None
 
 
-@dataclass
 class InsiderFilingsBot(Bot):
-    name: str = "insider_filings"
+    name = "insider_filings"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
     def compute_signal(self) -> Signal:
         try:

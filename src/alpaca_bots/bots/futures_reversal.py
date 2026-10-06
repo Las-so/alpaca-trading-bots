@@ -16,18 +16,19 @@ first live run; don't assume the class path without checking.
 """
 from __future__ import annotations
 import statistics
-from dataclasses import dataclass
 
 from .base import Bot, Signal
 from .. import jev_client
 
 
-@dataclass
 class FuturesReversal(Bot):
-    name: str = "futures_reversal"
-    symbol: str = "ESZ5"  # front-month E-mini S&P continuous contract; update per active contract
-    lookback: int = 30
-    z_entry: float = 2.0
+    name = "futures_reversal"
+
+    def __init__(self, *args, symbol: str = "ESZ5", lookback: int = 30, z_entry: float = 2.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.symbol = symbol       # front-month E-mini S&P continuous contract; update per active contract
+        self.lookback = lookback
+        self.z_entry = z_entry
 
     def compute_signal(self) -> Signal:
         bars = self.client.get_futures_bars(self.symbol, timeframe="1Min", limit=self.lookback + 1)

@@ -5,6 +5,12 @@ key is a clear, structured "not configured" state, never a silent guess.
 from __future__ import annotations
 import os
 from dataclasses import dataclass
+from dotenv import load_dotenv
+
+# Load .env once, on first import, without overriding real env vars that are
+# already set (e.g. TYPESAFE_API_KEY, which lives as a Windows user env var
+# via jev-cli, not in this file).
+load_dotenv(override=False)
 
 
 @dataclass(frozen=True)
