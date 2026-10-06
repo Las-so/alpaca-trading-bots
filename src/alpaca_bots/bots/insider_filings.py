@@ -69,13 +69,28 @@ def _parse_form4(index_url: str) -> InsiderPurchase | None:
     xml_url = m.group(1)
     if xml_url.startswith("/"):
         xml_url = "https://www.sec.gov" + xml_url
-    doc = ET.fromstring(_fetch(xml_url))
+    return _parse_form4_xml_bytes(_fetch(xml_url), xml_url)
+
+
+def _parse_form4_xml_bytes(xml_bytes: bytes, source_url: str) -> InsiderPurchase | None:
+    """The actual XML-parsing core, shared by the live feed (_parse_form4,
+    which has to resolve an index page to find this XML first) and
+    historical_form4_purchases (which already knows the XML url directly
+    from SEC's full-text search index, no index-page resolution needed)."""
+    doc = ET.fromstring(xml_bytes)
 
     symbol_el = doc.find(".//issuer/issuerTradingSymbol")
     issuer_name_el = doc.find(".//issuer/issuerName")
-    if symbol_el is None or not symbol_el.text:
+    if symbol_el is None or not symbol_el.text or not symbol_el.text.strip():
         return None
     symbol = symbol_el.text.strip()
+    # Real bug, caught by running this against real filings: SEC writes the
+    # literal string "N/A" into issuerTradingSymbol for issuers with no
+    # public ticker (a non-traded trust, a fund) — not an empty/missing
+    # field, so the check above doesn't catch it. There is nothing to buy
+    # on Alpaca for these; filter them out explicitly.
+    if symbol.upper() in ("N/A", "NONE", "NA", ""):
+        return None
     company = issuer_name_el.text.strip() if issuer_name_el is not None else symbol
 
     role_bits = []
@@ -100,8 +115,75 @@ def _parse_form4(index_url: str) -> InsiderPurchase | None:
         price = float(price_el.text)
         value = shares * price
         if value >= MIN_PURCHASE_VALUE:
-            return InsiderPurchase(symbol, company, filer_role, shares, price, value, index_url)
+            return InsiderPurchase(symbol, company, filer_role, shares, price, value, source_url)
     return None
+
+
+@dataclass
+class HistoricalFilingsResult:
+    purchases: list  # list of (filing_date, InsiderPurchase)
+    filings_scanned: int        # raw SEC filings actually fetched + parsed
+    total_filings_in_window: int  # SEC's reported total for the whole date range
+
+
+def historical_form4_purchases(start_date: str, end_date: str, max_filings: int = 60) -> HistoricalFilingsResult:
+    """Real historical Form 4 filings for backtesting — NOT the live feed.
+    Uses SEC's full-text search index (efts.sec.gov), which (verified by an
+    actual call, not assumed) supports a custom date range, unlike the live
+    "getcurrent" feed this bot uses for real-time polling.
+
+    HONEST LIMITATION, found by actually checking the real numbers: SEC
+    returns results newest-first with no further filter, and a 30-day
+    window commonly has 10,000+ Form 4 filings. Scanning only the newest
+    `max_filings` means a wide window is really only examining its most
+    recent slice, not full coverage — real full coverage would need
+    paging through thousands of results per window, which is both slow
+    and heavy on SEC's free API. total_filings_in_window on the result
+    tells the caller the true scale, so this limitation can't be missed.
+
+    Rate-limited deliberately (one request per filing, small sleep between)
+    out of respect for SEC's servers — this is a backtest tool run
+    occasionally, not a polling loop.
+    """
+    # Real bug, caught on the first wide-window run: SEC's search-index
+    # backend returns a real HTTP 500 when q is an empty quoted string
+    # ("q=%22%22") over a date range wider than ~10 days — verified
+    # directly by testing with and without the q param at the same window
+    # size. Omitting q entirely (searching all Form 4 filings with no text
+    # filter) works for any window size.
+    search_url = (
+        "https://efts.sec.gov/LATEST/search-index"
+        f"?forms=4&dateRange=custom&startdt={start_date}&enddt={end_date}"
+    )
+    hits_raw = _fetch(search_url).decode(errors="replace")
+    import json
+    data = json.loads(hits_raw)
+    total_available = data.get("hits", {}).get("total", {}).get("value", 0)
+    hits = data.get("hits", {}).get("hits", [])[:max_filings]
+
+    results = []
+    for hit in hits:
+        src = hit.get("_source", {})
+        adsh = src.get("adsh", "")
+        file_date = src.get("file_date", "")
+        file_id = hit.get("_id", "")
+        if ":" not in file_id or not adsh:
+            continue
+        filename = file_id.split(":", 1)[1]
+        accession_no_dashes = adsh.replace("-", "")
+        # The accession prefix (adsh's own leading CIK) is the filer whose
+        # EDGAR Archives folder holds this filing — verified directly
+        # against a real filing, not assumed from the API shape.
+        filer_cik = adsh.split("-")[0].lstrip("0") or "0"
+        xml_url = f"https://www.sec.gov/Archives/edgar/data/{filer_cik}/{accession_no_dashes}/{filename}"
+        try:
+            purchase = _parse_form4_xml_bytes(_fetch(xml_url), xml_url)
+        except Exception:
+            continue
+        if purchase:
+            results.append((file_date, purchase))
+        time.sleep(0.15)  # be polite to SEC's servers
+    return HistoricalFilingsResult(purchases=results, filings_scanned=len(hits), total_filings_in_window=total_available)
 
 
 class InsiderFilingsBot(Bot):

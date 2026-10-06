@@ -68,22 +68,46 @@ track record is known before paper (let alone live) money rides on it.
 
 **What it can and can't backtest, verified directly, not assumed:**
 - `orb`, `dca_drip`: yes — both read ordinary equity bars.
-- `insider_filings`: no — its only data source is SEC EDGAR's LIVE
-  "getcurrent" filings feed. There is no historical equivalent wired in;
-  backtesting it for real needs a different SEC data source (e.g. the
-  full-text search historical index) and a rewrite of its fetch path.
-- `futures_reversal`: no — **real finding, not a guess**: alpaca-py has no
-  futures historical data client at all as of its latest release (0.44.0,
-  checked Oct 6 2026). Confirmed two independent ways: introspecting the
-  installed package directly (no `futures` module anywhere in it) and
-  reading Alpaca's own SDK docs site (Market Data Reference lists stock,
-  crypto, options — no futures). The ORIGINAL code comment on this bot said
-  the futures client's "exact class name has moved between releases" —
-  that was an unverified assumption, written without ever actually checking,
-  and it was wrong: the capability doesn't exist yet, period. Lesson: a
-  third-party SDK's capability claim gets checked by introspecting the
-  installed package and reading its official docs before writing anything
-  about it in a comment, never stated as "probably moved" from a guess.
+- `insider_filings`: YES, as of a same-day follow-up fix (Oct 6 2026). The
+  first version of this doc said no — that was wrong, caught when Larry
+  pushed back and asked "couldn't you just write it into the code?" SEC's
+  full-text search index (efts.sec.gov) DOES support a real historical
+  date range; the live bot just never used it (only polls "today's
+  filings"). Added `historical_form4_purchases()` in
+  `bots/insider_filings.py`, which fetches real past filings directly by
+  URL and reuses the exact same XML-parsing code the live bot uses.
+  **Caught two real bugs getting this working, both on the first live
+  run against real SEC data:** (1) SEC writes the literal string "N/A"
+  into the ticker field for non-public trusts/funds — not an empty
+  field, so the existing missing-symbol check didn't catch it, and it
+  would have "bought" a $44M position in something with no ticker to
+  trade. (2) SEC's search backend 500s on an empty quoted query string
+  once the date range passes about 10 days — fixed by dropping that
+  param entirely. **Honest limitation, not hidden:** a 30-day window has
+  10,000+ Form 4 filings; this only scans the newest 60 (checking each
+  one's full XML is a real network fetch, done respectfully with a
+  delay between requests) — a wide-window backtest result is a sample
+  of the most recent slice, not full coverage, and the harness reports
+  the true total so this can't be missed.
+- `futures_reversal`: no, and not fixable by writing more code in this
+  repo — **real finding, verified THREE independent ways, not a guess**:
+  (1) introspecting the installed alpaca-py package directly (no
+  `futures` module anywhere in it), (2) reading Alpaca's own SDK docs
+  site (Market Data Reference lists stock, crypto, options — no
+  futures), (3) probing Alpaca's raw REST API directly with real
+  credentials (a guessed `v1beta1/futures/bars` path returns a genuine
+  "endpoint not found", and Alpaca's own changelog has never once
+  mentioned futures market data). The ORIGINAL code comment on this bot
+  said the futures client's "exact class name has moved between
+  releases" — that was an unverified assumption, written without ever
+  actually checking, and it was wrong: the capability doesn't exist in
+  Alpaca's product at all yet, at any layer, period. This is a gap in
+  Alpaca's own product, not something more code here can work around.
+  Lesson: a third-party vendor's capability claim gets checked by
+  introspecting the installed package, reading official docs, AND
+  probing the raw API directly before writing anything about it in a
+  comment — never stated as "probably moved" from a guess, and never
+  accepted as "impossible" from the first check alone either.
 
 **Known simplification, stated plainly:** the ORB backtest uses a daily-bar
 rolling-range proxy, not the live bot's first-15-minutes-of-the-day logic
@@ -92,14 +116,18 @@ is good enough to compare relative performance across bots, not a claim
 that it replays the exact live strategy bar-for-bar — don't read its
 numbers as "what ORB would have actually earned live."
 
-**Real result from the first live run (180 days, SPY, $50/week drip):**
-orb: 0 trades, 0% return (one signal fired, Jev declined it). dca_drip:
-26 buys, $1,300 invested, 8.01% return. This is one run over one window on
-one symbol — not a verdict on either strategy, just the first real data
-point. Re-run with different windows/symbols before drawing conclusions,
-and don't add a 5th bot before these two have more backtest history behind
-them (see the standing "don't start more things before finishing the
-current one" pattern).
+**Real result from the first full live run (180 days of SPY for orb/
+dca_drip; Sept 2026 for insider_filings):** orb: 0 trades, 0% return (one
+signal fired, Jev declined it). dca_drip: 26 buys, $1,300 invested, 8.01%
+return. insider_filings: 1 qualifying purchase found in the scanned
+sample, Jev declined it, 0 trades. This is one run over one window — not
+a verdict on any strategy, just the first real data point for each. Only
+futures_reversal remains un-backtestable, and that's a verified Alpaca
+product gap, not something left undone here. Re-run with different
+windows/symbols before drawing conclusions, and don't add a 5th bot
+before these three have more backtest history behind them (see the
+standing "don't start more things before finishing the current one"
+pattern).
 
 ## What "done" looks like for this repo
 

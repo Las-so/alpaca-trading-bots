@@ -7,17 +7,22 @@ What this can and can't backtest, and why (checked directly, not assumed):
   - orb (OpeningRangeBreakout) and dca_drip (DCADripBot): YES. Both read
     ordinary equity bars via AlpacaClient.get_bars(), which now supports a
     real start/end historical window.
-  - insider_filings (InsiderFilingsBot): NO, not here. Its data source is
-    SEC EDGAR's live "getcurrent" atom feed — there is no historical
-    equivalent wired into this bot. A real backtest of this bot needs a
-    different source (e.g. SEC's full-text search historical index) and a
-    rewrite of its data-fetch path; it is excluded below with that reason
-    stated, not silently skipped.
-  - futures_reversal (FuturesReversal): NO, not here. alpaca-py has no
-    futures historical data client at all as of 0.44.0 (verified Oct 2026
-    by both introspecting the installed package and reading Alpaca's own
-    SDK docs) — there is no data to replay. Excluded with that reason
-    stated.
+  - insider_filings (InsiderFilingsBot): YES, as of Oct 6 2026. Its live
+    bot still only polls SEC's "getcurrent" feed (today's filings only),
+    but bots/insider_filings.py now also has historical_form4_purchases(),
+    which queries SEC's full-text search index (efts.sec.gov) for a real
+    date range and fetches each filing's actual XML directly — verified
+    working against real historical filings, not assumed.
+  - futures_reversal (FuturesReversal): NO, not here, and not fixable by
+    writing more code in this repo. Checked THREE independent ways (Oct 6
+    2026): introspecting the installed alpaca-py package (no futures
+    module), Alpaca's own SDK docs site (no futures client listed), and
+    probing Alpaca's raw REST API directly with real credentials (the
+    guessed v1beta1/futures/bars path returns a real "endpoint not
+    found", and Alpaca's own changelog has never mentioned futures market
+    data). This is a real gap in Alpaca's product itself, not a gap in
+    this code — no amount of writing code against Alpaca can produce
+    data Alpaca doesn't serve. Excluded with that reason stated.
 
 Simulation rules (kept deliberately simple and stated plainly, not hidden):
   - Signals are computed on each day's bar using only bars up to and
@@ -45,6 +50,7 @@ from alpaca_bots.jev_client import JevNotConfigured, JevError
 from alpaca_bots.bots.base import Bot, Signal
 from alpaca_bots.bots.orb import OpeningRangeBreakout
 from alpaca_bots.bots.dca_drip import DCADripBot
+from alpaca_bots.bots.insider_filings import InsiderFilingsBot, historical_form4_purchases
 from alpaca_bots.runner import CADENCE_SECONDS
 
 
@@ -206,7 +212,75 @@ def backtest_dca(client: AlpacaClient, symbol: str, days: int, starting_cash: fl
     }
 
 
-def main(symbol: str = "SPY", days: int = 180, starting_cash: float = 100_000.0, dca_dollar_amount: float = 50.0):
+def backtest_insider_filings(client: AlpacaClient, start_date: str, end_date: str, starting_cash: float) -> dict:
+    """Replays real historical Form 4 filings (via historical_form4_purchases)
+    through the same Jev + risk-engine path the live bot uses, then marks
+    every symbol bought to its most recent close. One Alpaca get_bars call
+    per DISTINCT symbol bought, not per filing — keeps this cheap even
+    over a window with many filings."""
+    bot = InsiderFilingsBot(client=client, risk=RiskEngine(RiskLimits()), dry_run=True)
+    try:
+        result = historical_form4_purchases(start_date, end_date, max_filings=60)
+    except Exception as e:
+        return {"bot": "insider_filings", "skipped": f"SEC fetch failed: {e}"}
+
+    filings = result.purchases
+    coverage_note = (
+        f"scanned the newest {result.filings_scanned} of {result.total_filings_in_window:,} "
+        f"total Form 4 filings SEC reports for this window — NOT full coverage of a wide "
+        f"window, see historical_form4_purchases' docstring"
+    )
+    if not filings:
+        return {"bot": "insider_filings", "num_trades": 0, "coverage": coverage_note,
+                "note": "no qualifying purchases found in the scanned filings"}
+
+    positions: dict[str, float] = {}
+    cost_basis: dict[str, float] = {}
+    jev_calls, jev_blocks = 0, 0
+    acct_equity = starting_cash
+    open_count = 0
+
+    for file_date, purchase in filings:
+        signal = Signal(purchase.symbol, "buy", purchase.price, f"{purchase.filer_role} bought — {purchase.company}")
+        try:
+            verdict = bot.ask_jev(signal)
+            jev_calls += 1
+        except (JevNotConfigured, JevError):
+            continue
+        if not verdict.proceed:
+            jev_blocks += 1
+            continue
+        acct_snap = AccountSnapshot(equity=acct_equity, starting_equity_today=acct_equity, open_position_value=0.0, open_position_count=open_count)
+        decision = bot.risk.check_new_entry(acct_snap, purchase.price)
+        if not decision.allowed or decision.max_shares_or_contracts < 1:
+            continue
+        qty = decision.max_shares_or_contracts
+        positions[purchase.symbol] = positions.get(purchase.symbol, 0) + qty
+        cost_basis[purchase.symbol] = cost_basis.get(purchase.symbol, 0) + qty * purchase.price
+        if positions[purchase.symbol] == qty:
+            open_count += 1
+
+    total_invested = sum(cost_basis.values())
+    final_value = 0.0
+    for sym, qty in positions.items():
+        try:
+            bars = client.get_bars(sym, timeframe="1Day", limit=1)
+            price = bars[-1].c if bars else 0.0
+        except Exception:
+            price = 0.0
+        final_value += qty * price
+
+    return {
+        "bot": "insider_filings", "coverage": coverage_note,
+        "num_trades": len(cost_basis), "symbols": list(cost_basis.keys()),
+        "total_invested": round(total_invested, 2), "final_value": round(final_value, 2),
+        "total_return_pct": round(((final_value - total_invested) / total_invested) * 100, 2) if total_invested else None,
+        "jev_calls": jev_calls, "jev_blocked_buys": jev_blocks,
+    }
+
+
+def main(symbol: str = "SPY", days: int = 180, starting_cash: float = 100_000.0, dca_dollar_amount: float = 50.0,
+         insider_start_date: str = "2026-09-01", insider_end_date: str = "2026-09-30"):
     try:
         client = AlpacaClient()
     except AlpacaNotConfigured as e:
@@ -218,12 +292,7 @@ def main(symbol: str = "SPY", days: int = 180, starting_cash: float = 100_000.0,
     results = []
     results.append(backtest_orb(client, symbol, days, starting_cash))
     results.append(backtest_dca(client, symbol, days, starting_cash, dca_dollar_amount))
-    results.append({
-        "bot": "insider_filings",
-        "skipped": "no historical data source wired in — this bot reads SEC EDGAR's "
-                   "LIVE filings feed only; backtesting it needs a different, historical "
-                   "SEC data source and a rewrite of its fetch path (not done here).",
-    })
+    results.append(backtest_insider_filings(client, insider_start_date, insider_end_date, starting_cash))
     results.append({
         "bot": "futures_reversal",
         "skipped": "alpaca-py has no futures historical data client as of 0.44.0 "
