@@ -34,6 +34,25 @@ specific setup, in this specific context, look worth taking."
   picked as a reasonable starting gate, not back-tested. Once paper trades
   accumulate, re-validate against outcomes per the standing "RE-RUN JEV
   AFTER RESULTS" rule.
+- **A real-money Robinhood version — decided Oct 6 2026, explicitly a
+  LATER phase, not built now.** Checked directly before Larry decided:
+  the `mcp__RobinHood__*` connector he already has fully covers equities
+  (quotes, historicals, order placement) — so `orb`, `dca_drip`, and
+  `insider_filings` could in principle point at Robinhood instead of
+  Alpaca. It does NOT cover futures at all (confirmed by name-searching
+  for `get_futures_quotes`/`get_futures_historicals`/`place_futures_order`
+  — none exist, and the connector's own docs say "Futures still require
+  the Robinhood app"), so this would not unblock `futures_reversal`
+  either; Robinhood sells futures as a product since Jan 2025 but there's
+  no programmatic access to it. The decision to make here before any
+  code gets written: Robinhood has no paper-trading mode, so this isn't
+  "the same bots pointed at a different data source" — it's a second,
+  real-money trading path that needs its own explicit safety design, not
+  a port. Build this only after Alpaca paper results give a real reason
+  to trust a specific strategy, and treat it as connecting to the
+  existing live RobinHood operation in `/areas/trading-desk.md` (four
+  accounts, Aristotle/Trading Bondsman framework, PDT/leverage already
+  being tracked there), not a separate thing.
 
 ## Bot 4 — DCA Drip (`bots/dca_drip.py`), added Oct 6 2026
 
