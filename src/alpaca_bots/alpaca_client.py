@@ -66,14 +66,36 @@ class AlpacaClient:
     def list_open_positions(self):
         return self.trading.get_all_positions()
 
-    def get_bars(self, symbol: str, timeframe: str = "1Min", limit: int = 60):
+    def get_bars(self, symbol: str, timeframe: str = "1Min", limit: int = 60, start=None, end=None):
+        """start/end (datetime, UTC) select a real historical window — used by
+        scripts/backtest.py. Omit both for the original behavior: the most
+        recent `limit` bars from now, used by the live bots.
+
+        VERIFIED (not assumed): on this paper account's IEX feed, a Day-bar
+        request with ONLY `limit` (no start/end) comes back empty — tested
+        directly, confirmed by the same request working once start/end are
+        added. So for 1Day with no explicit window, synthesize one ourselves
+        rather than pass limit alone and silently get nothing back.
+        """
         from alpaca.data.requests import StockBarsRequest
         from alpaca.data.timeframe import TimeFrame
+        from datetime import datetime, timedelta, timezone
 
         tf_map = {"1Min": TimeFrame.Minute, "1Day": TimeFrame.Day}
-        req = StockBarsRequest(
-            symbol_or_symbols=symbol, timeframe=tf_map.get(timeframe, TimeFrame.Minute), limit=limit
-        )
+        kwargs = dict(symbol_or_symbols=symbol, timeframe=tf_map.get(timeframe, TimeFrame.Minute))
+        if start is not None or end is not None:
+            if start is not None:
+                kwargs["start"] = start
+            if end is not None:
+                kwargs["end"] = end
+            kwargs["limit"] = limit
+        elif timeframe == "1Day":
+            kwargs["end"] = datetime.now(timezone.utc) - timedelta(minutes=20)
+            kwargs["start"] = kwargs["end"] - timedelta(days=max(limit * 3, 10))
+            kwargs["limit"] = limit
+        else:
+            kwargs["limit"] = limit
+        req = StockBarsRequest(**kwargs)
         bars = self.stock_data.get_stock_bars(req)
         return [
             Bar(t=str(b.timestamp), o=float(b.open), h=float(b.high), l=float(b.low), c=float(b.close), v=float(b.volume))
@@ -95,12 +117,32 @@ class AlpacaClient:
         )
         return self.trading.submit_order(req)
 
+    def submit_notional_order(self, symbol: str, notional: float, side: str):
+        """Fractional/dollar-amount market order — no bracket (take-profit/
+        stop-loss legs require whole-share qty on Alpaca and don't apply to
+        an accumulation strategy anyway). Used by DCADripBot, not the other
+        three bots."""
+        from alpaca.trading.requests import MarketOrderRequest
+        from alpaca.trading.enums import OrderSide, TimeInForce
+
+        req = MarketOrderRequest(
+            symbol=symbol,
+            notional=round(notional, 2),
+            side=OrderSide.BUY if side == "buy" else OrderSide.SELL,
+            time_in_force=TimeInForce.DAY,
+        )
+        return self.trading.submit_order(req)
+
     def get_futures_bars(self, symbol: str, timeframe: str = "1Min", limit: int = 60):
-        """Alpaca added futures trading access in 2025; the exact client class
-        name has moved around in alpaca-py releases. This tries the documented
-        current path and falls back to a clear error rather than a silent
-        wrong result — verify against https://docs.alpaca.markets the first
-        time this runs against a funded futures-enabled paper account."""
+        """VERIFIED Oct 6 2026, two independent checks, not an assumption:
+        (1) direct introspection of the installed alpaca-py 0.44.0 package —
+        no 'futures' module anywhere in it; (2) Alpaca's own official SDK docs
+        site (alpaca.markets/sdks/python) — its Market Data Reference lists
+        stock, crypto, and options historical clients, no futures client.
+        alpaca-py genuinely does not expose futures historical data yet, full
+        stop — this is not an import path that "moved", which is what an
+        earlier version of this comment assumed without checking. Re-verify
+        both of those before assuming this still holds."""
         try:
             from alpaca.data.historical.futures import FuturesHistoricalDataClient
             from alpaca.data.requests import FuturesBarsRequest
@@ -115,9 +157,15 @@ class AlpacaClient:
             ]
         except ImportError as e:
             raise RuntimeError(
-                "This installed alpaca-py version doesn't expose a futures "
-                "historical data client under the expected path. Run "
-                "`uv pip install -U alpaca-py` and check "
-                "https://docs.alpaca.markets/docs/futures-trading for the "
-                "current class name, then update this method."
+                "alpaca-py has no futures historical data client as of the "
+                "latest release (0.44.0, checked Oct 2026) — this isn't a "
+                "class-name/import-path issue to fix here, it's a real gap "
+                "in Alpaca's own SDK. Before trying anything else: re-check "
+                "pypi.org/project/alpaca-py for a newer release that adds "
+                "futures, and alpaca.markets/sdks/python for an updated "
+                "Market Data Reference. If still missing, futures data for "
+                "this bot needs a different provider entirely (or Alpaca's "
+                "raw REST API directly, bypassing alpaca-py, if their REST "
+                "surface supports futures ahead of the SDK — unverified, "
+                "check before relying on it)."
             ) from e

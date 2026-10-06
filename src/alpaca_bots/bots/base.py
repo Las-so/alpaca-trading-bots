@@ -40,6 +40,19 @@ class Bot(ABC):
     def ask_jev(self, signal: Signal):
         """Returns a JevVerdict. The only place this bot calls Jev."""
 
+    def desired_dollar_amount(self) -> float | None:
+        """Override to cap this bot's position at a fixed dollar amount per
+        trade (e.g. a DCA/drip bot) instead of the generic risk-sized max.
+        None (default) keeps the existing risk-sized behavior."""
+        return None
+
+    def uses_notional_order(self) -> bool:
+        """Override True for a bot that should submit a fractional/dollar
+        market order (no bracket) instead of the default whole-share
+        bracket order — for an accumulation strategy with no stop/target,
+        where flooring to whole shares could round a small buy to 0."""
+        return False
+
     def run_once(self) -> dict:
         try:
             signal = self.compute_signal()
@@ -95,7 +108,11 @@ class Bot(ABC):
             equity=acct.equity, starting_equity_today=acct.equity,
             open_position_value=0.0, open_position_count=len(self.client.list_open_positions()),
         )
-        decision = self.risk.check_new_entry(snapshot, signal.price)
+        if self.uses_notional_order():
+            decision = self.risk.check_new_notional_entry(snapshot, signal.price, self.desired_dollar_amount() or 0.0)
+        else:
+            decision = self.risk.check_new_entry(snapshot, signal.price, desired_dollar_amount=self.desired_dollar_amount())
+
         if not decision.allowed:
             state.record_decision(state.DecisionLogEntry(
                 ts=_now(), bot=self.name, symbol=signal.symbol, signal=signal.side,
@@ -103,6 +120,23 @@ class Bot(ABC):
                 action="risk_blocked", rationale=decision.reason,
             ))
             return {"action": "risk_blocked", "reason": decision.reason}
+
+        if self.uses_notional_order():
+            if self.dry_run:
+                state.record_decision(state.DecisionLogEntry(
+                    ts=_now(), bot=self.name, symbol=signal.symbol, signal=signal.side,
+                    jev_verdict=verdict.rationale_hint, jev_probability=verdict.probability,
+                    action="skipped", rationale=f"DRY RUN — would submit \${decision.notional_amount:.2f} notional @ {signal.price}",
+                ))
+                return {"action": "dry_run", "notional": decision.notional_amount}
+
+            order = self.client.submit_notional_order(signal.symbol, decision.notional_amount, signal.side)
+            state.record_decision(state.DecisionLogEntry(
+                ts=_now(), bot=self.name, symbol=signal.symbol, signal=signal.side,
+                jev_verdict=verdict.rationale_hint, jev_probability=verdict.probability,
+                action="entered", rationale=f"\${decision.notional_amount:.2f} notional @ {signal.price}",
+            ))
+            return {"action": "entered", "order": order}
 
         if self.dry_run:
             state.record_decision(state.DecisionLogEntry(

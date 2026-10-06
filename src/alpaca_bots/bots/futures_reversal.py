@@ -9,10 +9,12 @@ Jev's job: judge whether this stretch looks like an exhausted move likely
 to mean-revert, or the start of a genuine trend continuation — given the
 magnitude of the move and how long price has been stretched.
 
-NOTE: get_futures_bars() depends on alpaca-py's futures data client, which
-is newer and has moved between releases — see the comment on that method.
-Verify it against a real funded futures-enabled paper account before the
-first live run; don't assume the class path without checking.
+NOTE (verified Oct 2026, not an assumption): get_futures_bars() currently
+always raises — alpaca-py has no futures historical data client at all in
+its latest release, confirmed by both introspecting the installed package
+and reading Alpaca's own SDK docs site. This bot cannot run, live or
+backtested, until that changes or a different data source is wired in. See
+the comment on get_futures_bars() in alpaca_client.py for what to re-check.
 """
 from __future__ import annotations
 import statistics

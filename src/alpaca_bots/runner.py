@@ -1,7 +1,12 @@
-"""Orchestrates all three bots on their own cadence. Dry-run by default —
+"""Orchestrates all four bots on their own cadence. Dry-run by default —
 flip dry_run=False per bot only after watching paper decisions in the
 dashboard and agreeing they look right. That switch is a conscious,
 separate step, not a config default.
+
+futures_reversal is included but will error on every cycle until alpaca-py
+ships futures historical data (see the NOTE in bots/futures_reversal.py) —
+left wired in on purpose so flipping it on later is a data-source fix, not
+a re-build.
 """
 from __future__ import annotations
 import time
@@ -11,6 +16,7 @@ from .risk import RiskEngine, RiskLimits
 from .bots.orb import OpeningRangeBreakout
 from .bots.insider_filings import InsiderFilingsBot
 from .bots.futures_reversal import FuturesReversal
+from .bots.dca_drip import DCADripBot
 from . import state
 
 
@@ -21,6 +27,7 @@ def build_bots(dry_run: bool = True):
         OpeningRangeBreakout(client=client, risk=risk, dry_run=dry_run),
         InsiderFilingsBot(client=client, risk=risk, dry_run=dry_run),
         FuturesReversal(client=client, risk=risk, dry_run=dry_run),
+        DCADripBot(client=client, risk=risk, dry_run=dry_run),
     ]
 
 
@@ -28,6 +35,7 @@ CADENCE_SECONDS = {
     "orb": 60,                 # check every minute during the opening window
     "insider_filings": 300,    # SEC feed doesn't need sub-minute polling
     "futures_reversal": 60,
+    "dca_drip": 604800,        # weekly — the whole point of a drip is schedule, not reaction
 }
 
 

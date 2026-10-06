@@ -24,6 +24,7 @@ class RiskDecision:
     allowed: bool
     reason: str
     max_shares_or_contracts: int = 0
+    notional_amount: float = 0.0  # used by check_new_notional_entry only (fractional/dollar orders)
 
 
 @dataclass
@@ -46,7 +47,7 @@ class RiskEngine:
     def circuit_breaker_tripped(self, acct: AccountSnapshot) -> bool:
         return self.daily_drawdown_pct(acct) >= self.limits.max_daily_drawdown_pct
 
-    def check_new_entry(self, acct: AccountSnapshot, price: float) -> RiskDecision:
+    def check_new_entry(self, acct: AccountSnapshot, price: float, desired_dollar_amount: float | None = None) -> RiskDecision:
         if self.circuit_breaker_tripped(acct):
             return RiskDecision(
                 allowed=False,
@@ -62,7 +63,13 @@ class RiskEngine:
             )
         max_position_value = acct.equity * self.limits.max_position_pct_of_equity
         room_left = (acct.equity * self.limits.max_total_exposure_pct) - acct.open_position_value
-        position_value = min(max_position_value, max(room_left, 0.0))
+        # A bot with a fixed per-trade dollar target (e.g. a DCA/drip bot) is
+        # capped at that amount, never scaled up to the generic max — the
+        # whole point of a drip is a small, steady buy, not a risk-sized one.
+        if desired_dollar_amount is not None:
+            position_value = min(desired_dollar_amount, max_position_value, max(room_left, 0.0))
+        else:
+            position_value = min(max_position_value, max(room_left, 0.0))
         if position_value <= 0 or price <= 0:
             return RiskDecision(
                 allowed=False,
@@ -72,6 +79,32 @@ class RiskEngine:
         if qty < 1:
             return RiskDecision(allowed=False, reason="sized position rounds to 0 shares/contracts")
         return RiskDecision(allowed=True, reason="within limits", max_shares_or_contracts=qty)
+
+    def check_new_notional_entry(self, acct: AccountSnapshot, price: float, desired_dollar_amount: float) -> RiskDecision:
+        """Same hard vetoes as check_new_entry (circuit breaker, max open
+        positions, exposure room, per-position cap) but sizes in DOLLARS,
+        not integer shares — for notional/fractional orders (e.g. a DCA
+        drip), where flooring to whole shares would round a small buy to 0
+        and make the bot a permanent no-op."""
+        if self.circuit_breaker_tripped(acct):
+            return RiskDecision(
+                allowed=False,
+                reason=(
+                    f"daily drawdown {self.daily_drawdown_pct(acct):.2%} >= "
+                    f"limit {self.limits.max_daily_drawdown_pct:.2%} — no new entries today"
+                ),
+            )
+        if acct.open_position_count >= self.limits.max_open_positions:
+            return RiskDecision(
+                allowed=False,
+                reason=f"already at max_open_positions ({self.limits.max_open_positions})",
+            )
+        max_position_value = acct.equity * self.limits.max_position_pct_of_equity
+        room_left = (acct.equity * self.limits.max_total_exposure_pct) - acct.open_position_value
+        notional = min(desired_dollar_amount, max_position_value, max(room_left, 0.0))
+        if notional <= 0 or price <= 0:
+            return RiskDecision(allowed=False, reason="no exposure room left under max_total_exposure_pct")
+        return RiskDecision(allowed=True, reason="within limits", notional_amount=round(notional, 2))
 
     def stop_price(self, entry_price: float, side: str) -> float:
         if side == "buy":
